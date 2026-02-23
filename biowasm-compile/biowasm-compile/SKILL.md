@@ -1,14 +1,8 @@
 ---
 name: biowasm-compile
-description: >
-  How to compile bioinformatics C/C++ tools to WebAssembly using Emscripten,
-  following the biowasm pattern. Use this skill whenever the user wants to:
-  compile a bioinformatics tool to WASM, port a genomics tool to the browser,
-  create a compile.sh script for a tool like SKESA/Mash/minimap2/samtools,
-  build a WebAssembly version of any C or C++ scientific tool, or asks about
-  running bioinformatics tools client-side without a server. Always use this
-  skill when the user mentions biowasm, emscripten, wasm32, or compiling tools
-  for browser-based genomics pipelines.
+description: Compile bioinformatics C/C++ tools to WebAssembly using Emscripten following biowasm patterns. Use when compiling genomics tools to WASM, porting tools to the browser, creating compile.sh scripts for tools like SKESA/Mash/minimap2/samtools, building WebAssembly versions of C/C++ scientific tools, or when the user mentions biowasm, emscripten, wasm32, or browser-based genomics pipelines.
+argument-hint: "[tool-name]"
+allowed-tools: Bash(emcc *), Bash(em++ *), Bash(emcmake *), Bash(emmake *), Bash(docker *)
 ---
 
 # Biowasm Compile Skill
@@ -288,10 +282,15 @@ emmake make CC=emcc AR=emar LDFLAGS="-s ERROR_ON_UNDEFINED_SYMBOLS=0"
 
 ---
 
-## References
+## Additional Resources
 
-- **`references/tool-specific.md`** - Tool-specific compile patterns (minimap2, samtools, bowtie2, fastp, etc.)
-- **`references/dependencies.md`** - Compiling common deps (htslib, zlib, boost)
-- **`references/skesa.md`** - SKESA-specific compile notes
-- biowasm source: https://github.com/biowasm/biowasm
-- Emscripten docs: https://emscripten.org/docs/compiling/WebAssembly.html
+For detailed reference material, see:
+
+- **[references/tool-specific.md](references/tool-specific.md)** - Real-world compile patterns from 40+ biowasm tools (minimap2, samtools, bowtie2, fastp, bhtsne, MAFFT). Includes debugging checklist and quick reference table.
+- **[references/dependencies.md](references/dependencies.md)** - Patterns for compiling common dependencies (htslib, zlib, boost, LZMA)
+- **[references/skesa.md](references/skesa.md)** - SKESA-specific compilation notes and JavaScript integration examples
+
+### External Resources
+
+- Biowasm project: https://github.com/biowasm/biowasm
+- Emscripten documentation: https://emscripten.org/docs/compiling/WebAssembly.html
