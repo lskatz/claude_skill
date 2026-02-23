@@ -1,0 +1,22 @@
+{
+  "id": "{TOOLNAME}",
+  "name": "{ToolName}",
+  "tagline": "{TOOL_TAGLINE}",
+  "description": "{TOOL_DESCRIPTION}",
+  "icon": "microscope",
+  "tech": ["WebAssembly", "TypeScript", "Vite"],
+  "features": [
+    "Feature 1",
+    "Feature 2",
+    "Client-side processing with no data uploads"
+  ],
+  "demoUrl": "https://{TOOLNAME}.vercel.app",
+  "sourceUrl": "https://github.com/genomicx/{TOOLNAME}",
+  "color": "#14B8A6",
+  "status": {
+    "scoping": "in-progress",
+    "pipeline": "not-started",
+    "webDev": "not-started",
+    "benchmarking": "not-started"
+  }
+}
