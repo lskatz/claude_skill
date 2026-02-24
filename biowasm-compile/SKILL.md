@@ -36,6 +36,25 @@ RUN apt-get update && apt-get install -y \
 The key emscripten version used by biowasm is pinned — always check the
 biowasm repo for the current pinned version before starting.
 
+### Docker-based compilation (recommended)
+
+Create a `compile-docker.sh` that mounts the project and runs compilation
+inside the Docker container:
+
+```bash
+#!/bin/bash
+set -e
+docker run --rm --platform linux/amd64 \
+  -v "$(pwd):/work" \
+  emscripten/emsdk:3.1.50 \
+  bash /work/compile.sh
+```
+
+And a `compile.sh` that runs inside the container with access to `/work`.
+This approach avoids installing Emscripten locally and ensures reproducible
+builds across different host platforms (including Apple Silicon via
+`--platform linux/amd64`).
+
 ---
 
 ## compile.sh Structure
@@ -181,14 +200,28 @@ WASM tools use Emscripten's virtual filesystem (MEMFS by default).
 
 **Writing files from JS at runtime** (user uploads):
 ```javascript
-const module = await createTool();
+const module = await createTool({
+  noInitialRun: true,  // Don't run main() on load
+  print: (t) => stdout.push(t),     // Capture stdout
+  printErr: (t) => stderr.push(t),  // Capture stderr
+});
 // Write input to virtual FS
 module.FS.writeFile('/input.fastq', new Uint8Array(fileBuffer));
-// Run tool
-module.callMain(['--reads', '/input.fastq', '--output', '/out.fa']);
-// Read output
+// Run tool via callMain (preferred — works like CLI)
+try {
+  module.callMain(['--reads', '/input.fastq', '--output', '/out.fa']);
+} catch (err) { /* Some tools throw on exit */ }
+// Read output from virtual FS or stdout array
 const result = module.FS.readFile('/out.fa', { encoding: 'utf8' });
 ```
+
+**Key integration tips:**
+- Use `noInitialRun: true` + `callMain()` rather than custom exported
+  functions. This is simpler and preserves the tool's argument parsing.
+- Capture stdout/stderr via `print`/`printErr` callbacks — many tools write
+  output to stdout (FASTA) and diagnostics to stderr.
+- In Node.js, pass `wasmBinary: readFileSync('tool.wasm')` to avoid fetch.
+- Some tools call `exit()` which throws in WASM — wrap `callMain` in try/catch.
 
 **Streaming large files** — for files >100MB, use WORKERFS or chunk the input
 rather than loading into MEMFS all at once.
@@ -231,15 +264,85 @@ emscripten module directly — see the Filesystem section above.
 
 ## Debugging Compilation Failures
 
-**Boost linking errors** — check if you only need headers (`-s USE_BOOST_HEADERS=1`) vs compiled libs. Most bioinformatics Boost usage is header-only.
+**Boost linking errors** — check if you only need headers (`-s USE_BOOST_HEADERS=1`) vs compiled libs. If the tool needs compiled Boost libs (program_options, iostreams, system), build them with Emscripten's `toolset=gcc-emscripten` (see `references/dependencies.md`).
 
 **`unknown argument` linker errors** — emscripten's `wasm-ld` doesn't support all gcc linker flags. Common culprits: `-Bstatic`, `-Bdynamic`, `-rdynamic`. Strip these from `LDFLAGS`.
 
 **`__aarch64__` / architecture ifdefs** — WASM is its own arch. Guard blocks with `#ifndef __EMSCRIPTEN__` or patch the source.
 
-**Threading compile errors** — if the tool uses `<thread>` or OpenMP without `-s USE_PTHREADS=1`, either add the flag or disable threading in source.
+**Threading compile errors** — if the tool uses `<thread>` or OpenMP without `-s USE_PTHREADS=1`, either add the flag or disable threading in source. For single-threaded WASM builds, add `#ifdef __EMSCRIPTEN__` guards to force `ncores=1`.
+
+**C++ exceptions** — many bioinformatics tools use exceptions. You MUST add both `-fexceptions` to CXXFLAGS and `-s DISABLE_EXCEPTION_CATCHING=0` to link flags. Without this, any `throw` will call `abort()`.
 
 **Binary too large** — add `-Os` instead of `-O3`, and `--closure 1` for JS minification. Strip unused exports.
+
+---
+
+## Critical: wasm32 Portability Bugs
+
+**This is the #1 source of silent runtime bugs.** A tool may compile and link
+successfully but produce wrong results because of 32-bit vs 64-bit differences.
+
+On wasm32, `size_t` and `ptrdiff_t` are **32-bit** (vs 64-bit on x86-64).
+This causes silent data corruption in any code that:
+
+### 1. Left-shifts by >= 32 bits on `size_t` or `ptrdiff_t`
+
+```cpp
+// BUG: ptrdiff_t is 32-bit on wasm32, shift >= 32 is UB
+storage[word] += ((find(table.begin(), table.end(), ch) - table.begin()) << shift);
+// FIX: cast to uint64_t before shifting
+storage[word] += (uint64_t(find(table.begin(), table.end(), ch) - table.begin()) << shift);
+```
+
+WASM's `i32.shl` masks the shift to 5 bits: `<< 32` becomes `<< 0`,
+`<< 33` becomes `<< 1`, etc. This silently corrupts data.
+
+### 2. Packs data into upper bits of `size_t`
+
+```cpp
+// BUG: size_t is 32-bit on wasm32, shifts << 48 and << 32 overflow
+size_t packed = (strand << 48) + (branch << 32) + count;
+// FIX: use uint64_t explicitly
+uint64_t packed = (uint64_t(strand) << 48) + (uint64_t(branch) << 32) + count;
+```
+
+Common in genomics tools that pack metadata (strand info, branching, flags)
+into the upper bits of count values.
+
+### 3. Stores hash values in `size_t`
+
+```cpp
+// BUG: 64-bit hash truncated to 32-bit on wasm32
+size_t hash_val = kmer.hash64();  // returns uint64_t, truncated to 32-bit
+size_t bucket = hash_val % table_size;  // different distribution than native
+// FIX: keep hash as uint64_t until modulo
+uint64_t hash_val = kmer.hash64();
+size_t bucket = hash_val % table_size;
+```
+
+### How to find these bugs
+
+After compilation succeeds, if the tool produces **wrong results** but no
+crashes:
+
+1. **Search for `size_t` in bit-shift operations:** `grep -n 'size_t.*<<\|<<.*size_t'`
+2. **Search for shifts >= 32:** `grep -n '<< 32\|<< 48\|<< 40'`
+3. **Search for bit-packing patterns:** `grep -n 'upper.*bit\|pack.*count\|strand.*shift'`
+4. **Search for `ptrdiff_t` or iterator arithmetic in shifts:** Look for
+   `(find(...) - begin()) << shift` patterns
+5. **Compare output with native build** — if counts, hashes, or statistics
+   differ, suspect `size_t` truncation
+6. **Add `#ifdef __EMSCRIPTEN__` debug output** at key pipeline stages to
+   narrow down where values diverge
+
+### The fix pattern
+
+Change `size_t` to `uint64_t` in:
+- Pair types storing packed data: `pair<Kmer, size_t>` → `pair<Kmer, uint64_t>`
+- All functions that read/write the packed data (getters, setters, visitors)
+- Local variables involved in bit-shifting before the result is stored
+- Cast arithmetic results to `uint64_t` before shifting left by >= 32
 
 ---
 

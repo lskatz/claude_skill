@@ -374,6 +374,51 @@ emmake make bowtie2-align-s \
 
 ---
 
+## wasm32 Runtime Bugs (size_t / ptrdiff_t)
+
+This is the most common source of **silent runtime bugs** — the tool compiles
+and links fine, but produces wrong results. On wasm32, `size_t` and
+`ptrdiff_t` are 32-bit (vs 64-bit on x86-64).
+
+### SKESA pattern (real-world example)
+
+SKESA compiled successfully but produced 0 contigs. Root causes:
+
+**Bug 1 — ptrdiff_t left-shift UB in read storage:**
+```cpp
+// ptrdiff_t is 32-bit on wasm32. For shift >= 32, this is UB.
+// WASM masks shift to 5 bits: << 32 becomes << 0, corrupting half of all nucleotides.
+storage[word] += ((find(table.begin(), table.end(), ch) - table.begin()) << shift);
+// FIX:
+storage[word] += (uint64_t(find(table.begin(), table.end(), ch) - table.begin()) << shift);
+```
+
+**Bug 2 — size_t used for 64-bit packed data:**
+```cpp
+// SKESA packs strand(16b) + branch(8b) + count(32b) into 64 bits
+// size_t is 32-bit on wasm32, so << 48 and << 32 overflow silently
+vector<pair<LargeInt<N>, size_t>> kmer_counts;  // BUG
+vector<pair<LargeInt<N>, uint64_t>> kmer_counts;  // FIX
+// Also fix ALL functions that read/write the .second member
+```
+
+**Symptoms:** Correct compilation, but wrong kmer counts (31% fewer distinct
+kmers), Valley=0 (should be >0), 0 contigs assembled.
+
+**How to find:** Compare output statistics with native x86-64 build. If
+counts or hashes differ, grep for `size_t.*<<` and `<< 32\|<< 48`.
+
+### General patterns to watch for
+
+1. `ptrdiff_t << N` where N >= 32 (iterator arithmetic before shift)
+2. `size_t` storing 64-bit packed data (hash values, bit-packed fields)
+3. `size_t` function return types for hash functions
+4. Implicit conversion from `uint64_t` to `size_t` in assignments
+
+**See `references/skesa.md` for the complete debugging story.**
+
+---
+
 ## Quick Reference Table
 
 | Tool | Pattern | Key Flags | Notes |
@@ -387,6 +432,7 @@ emmake make bowtie2-align-s \
 | bhtsne | Async | `-s ASYNCIFY=1` | For async JS calls |
 | MAFFT | Memory | `-s TOTAL_MEMORY=360MB` | Fixed memory allocation |
 | htslib | Dependency | See pattern | Compiles LZMA from source |
+| SKESA | Makefile+Boost | `-fexceptions`, `DISABLE_EXCEPTION_CATCHING=0` | Needs compiled Boost + wasm32 size_t fixes |
 
 ---
 
@@ -402,6 +448,8 @@ When a compile fails, check:
 6. **Slow page load?** → Reduce preloaded data size
 7. **Threading errors?** → Add `NO_TBB=1`, `USE_PTHREADS=0`, or `--disable-threads`
 8. **SIMD compile errors?** → Try non-SIMD Makefile first
+9. **C++ exceptions abort?** → Add `-fexceptions` and `-s DISABLE_EXCEPTION_CATCHING=0`
+10. **Compiles but wrong results?** → Check for `size_t`/`ptrdiff_t` bugs (see wasm32 section above)
 
 ---
 
