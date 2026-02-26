@@ -174,6 +174,7 @@ Add an entry to `genomicx.github.io/apps.json` following the format in `assets/a
 - Author: `Nabil-Fareed Alikhan <nabil@happykhan.com> (https://www.happykhan.com)`
 - Twitter: `@happy_khan`
 - Deploy: Vercel
+- Default: prompt the user for author and twitter
 
 ## package.json Conventions
 
